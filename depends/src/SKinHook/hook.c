@@ -769,7 +769,10 @@ FreezeEx (PFROZEN_THREADS pThreads, UINT pos, UINT action, UINT idx)
           DWORD  dwSuspend =
             SuspendThread (hThread);
 
-          CONTEXT                     threadContext;
+          // ContextFlags must be set: an uninitialized CONTEXT can ask for CONTEXT_XSTATE without an
+          //   extended-context layout, which crashes under Wine on ARM64 (x86-64 emulation).
+          CONTEXT                     threadContext = { 0 };
+                                      threadContext.ContextFlags = CONTEXT_CONTROL;
           GetThreadContext (hThread, &threadContext);
 
           if (GetExitCodeThread (hThread, &dwExitCode))
@@ -865,7 +868,8 @@ FreezeEx (PFROZEN_THREADS pThreads, UINT pos, UINT action, UINT idx)
 
             if ( (dwRet = SuspendThread (hThread)) != (DWORD)-1 )
             {
-              CONTEXT                     threadContext;
+              CONTEXT                     threadContext = { 0 };
+                                          threadContext.ContextFlags = CONTEXT_CONTROL;
               GetThreadContext (hThread, &threadContext);
 
               ++pThread->suspensions;
