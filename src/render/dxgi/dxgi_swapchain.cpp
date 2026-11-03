@@ -24,6 +24,8 @@
 #include <SpecialK/stdafx.h>
 
 #include <SpecialK/render/dxgi/dxgi_swapchain.h>
+
+extern IDXGISwapChain3* pLazyD3D12Chain;
 #include <SpecialK/render/dxgi/dxgi_util.h>
 #include <SpecialK/render/d3d11/d3d11_core.h>
 #include <SpecialK/nvapi.h>
@@ -387,6 +389,14 @@ IWrapDXGISwapChain::Release (void)
     }
   }
 
+  // The D3D12 command queue detection keeps a raw pointer to the newest SwapChain
+  //   (pLazyD3D12Chain, set when any SwapChain is created). Note this SwapChain's
+  //     IDXGISwapChain3 pointer now, so that pointer can be cleared once it is destroyed.
+  IDXGISwapChain3* pReal3 = nullptr;
+
+  if (pLazyD3D12Chain != nullptr && SUCCEEDED (pReal->QueryInterface (IID_PPV_ARGS (&pReal3))))
+    pReal3->Release ();
+
   ULONG refs =
     pReal->Release ();
 
@@ -409,6 +419,13 @@ IWrapDXGISwapChain::Release (void)
   {
     SK_LOG0 ( ( L"(-) Releasing wrapped SwapChain (%08ph)... device=%08ph, hwnd=%08ph", pReal, pDev.p, hwnd),
              L"Swap Chain");
+
+    // e.g. a temporary SwapChain another overlay (REFramework) created to find the D3D12 vtables:
+    //   D3D12CommandQueue_ExecuteCommandLists_Detour must not use it after this.
+    InterlockedCompareExchangePointer ((void **)&pLazyD3D12Chain, nullptr, pReal);
+    InterlockedCompareExchangePointer ((void **)&pLazyD3D12Chain, nullptr, static_cast <IDXGISwapChain3 *> (this));
+    if (pReal3 != nullptr)
+      InterlockedCompareExchangePointer ((void **)&pLazyD3D12Chain, nullptr, pReal3);
 
     if (ver_ > 0)
       InterlockedDecrement (&SK_DXGI_LiveWrappedSwapChain1s);
