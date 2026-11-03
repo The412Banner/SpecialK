@@ -705,7 +705,11 @@ FreezeEx (PFROZEN_THREADS pThreads, UINT pos, UINT action, UINT idx)
 
   // Unsafe (deadlock possible) due to DirectInput 8 hook code
   //
-  SK_NtLdr_LockLoaderLock (0x0, &ldrState, &ldrCookie);
+  //   Not under x86-64 emulation on ARM64: DirectInput is not hooked there, and RE Engine games
+  //   deadlocked at startup with this lock held (a thread holding the loader lock waited for a
+  //   critical section whose owner waited for the loader lock).
+  if (! SK_IsX64EmulatedOnARM64 ())
+    SK_NtLdr_LockLoaderLock (0x0, &ldrState, &ldrCookie);
 
   EnumerateThreads (pThreads);
 
