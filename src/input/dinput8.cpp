@@ -22,6 +22,7 @@
 **/
 
 #include <SpecialK/stdafx.h>
+#include <SpecialK/arm64ec.h>
 
 #ifdef  __SK_SUBSYSTEM__
 #undef  __SK_SUBSYSTEM__
@@ -266,6 +267,11 @@ void
 WINAPI
 SK_BootDI8 (void)
 {
+  // Under x86-64 emulation on ARM64 leave DirectInput alone (see SK_Input_HookDI8), unless
+  //   Special K itself is dinput8.dll and has to forward DirectInput8Create.
+  if (SK_IsX64EmulatedOnARM64 () && ! (SK_GetDLLRole () & DLL_ROLE::DInput8))
+    return;
+
   static volatile LONG hooked = FALSE;
 
   if (! InterlockedCompareExchange (&hooked, TRUE, FALSE))
@@ -2147,7 +2153,8 @@ IDirectInput8W_EnumDevices_Detour ( IDirectInput8W*          This,
 void
 SK_Input_HookDI8 (void)
 {
-  if (! config.input.gamepad.hook_dinput8)
+  // DirectInput is native ARM64EC code under x86-64 emulation on ARM64; hooking it crashes games.
+  if (! config.input.gamepad.hook_dinput8 || SK_IsX64EmulatedOnARM64 ())
     return;
 
   if (! SK_GetModuleHandle (L"dinput8.dll"))

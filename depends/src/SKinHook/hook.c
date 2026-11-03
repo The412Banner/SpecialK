@@ -27,6 +27,7 @@
  */
 
 #include <SpecialK/targetver.h>
+#include <SpecialK/arm64ec.h>
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -1237,6 +1238,10 @@ MH_CreateHookEx ( LPVOID   pTarget,   LPVOID pDetour,
                   LPVOID *ppOriginal, UINT   idx )
 {
   MH_STATUS status = MH_OK;
+
+  // An x86-64 hook written into native ARM64EC code is never emulated and crashes.
+  if (SK_IsArm64ECCode (pTarget))
+    return MH_ERROR_UNSUPPORTED_FUNCTION;
 
   EnterSpinLock ();
 

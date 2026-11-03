@@ -22,6 +22,7 @@
 **/
 
 #include <SpecialK/stdafx.h>
+#include <SpecialK/arm64ec.h>
 
 #ifdef  __SK_SUBSYSTEM__
 #undef  __SK_SUBSYSTEM__
@@ -285,6 +286,9 @@ void
 WINAPI
 SK_BootDI7 (void)
 {
+  if (SK_IsX64EmulatedOnARM64 ())
+    return;
+
   static volatile LONG hooked = FALSE;
 
   if (! InterlockedCompareExchange (&hooked, TRUE, FALSE))
@@ -1260,7 +1264,8 @@ IDirectInput7A_CreateDevice_Detour ( IDirectInput7A        *This,
 void
 SK_Input_HookDI7 (void)
 {
-  if (! config.input.gamepad.hook_dinput7)
+  // DirectInput is native ARM64EC code under x86-64 emulation on ARM64; hooking it crashes games.
+  if (! config.input.gamepad.hook_dinput7 || SK_IsX64EmulatedOnARM64 ())
     return;
 
   static volatile LONG hooked = FALSE;

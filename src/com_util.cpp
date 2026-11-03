@@ -22,6 +22,7 @@
 **/
 
 #include <SpecialK/stdafx.h>
+#include <SpecialK/arm64ec.h>
 #include <SpecialK/com_util.h>
 
 #define __SK_SUBSYSTEM__ L" COM Util "
@@ -103,7 +104,8 @@ CoCreateInstance_Detour (
   if (ppv == nullptr)
     return E_POINTER;
 
-  if (rclsid == CLSID_DirectInput8)
+  // Under x86-64 emulation on ARM64 DirectInput is created as is, without Special K's hooks.
+  if (rclsid == CLSID_DirectInput8 && ! SK_IsX64EmulatedOnARM64 ())
   {
     if (riid == IID_IDirectInput8A)
       return CoCreateInstance_DI8 (pUnkOuter, dwClsContext, riid, ppv, _ReturnAddress ());
@@ -112,7 +114,7 @@ CoCreateInstance_Detour (
     
   }
 
-  if (rclsid == CLSID_DirectInput)
+  if (rclsid == CLSID_DirectInput && ! SK_IsX64EmulatedOnARM64 ())
   {
     if (riid == IID_IDirectInputA)
      return CoCreateInstance_DI7 (pUnkOuter, dwClsContext, riid, ppv, _ReturnAddress ());
@@ -223,7 +225,7 @@ CoCreateInstanceEx_Detour (
   const int version = device ? (rclsid == CLSID_DirectInputDevice8 ? 8 : 7 )
                              : (rclsid == CLSID_DirectInput8       ? 8 : 7 );
 
-  if (device || base)
+  if ((device || base) && ! SK_IsX64EmulatedOnARM64 ())
   {
     switch (version)
     {
