@@ -22,6 +22,7 @@
 **/
 
 #include <SpecialK/stdafx.h>
+#include <SpecialK/arm64ec.h>
 #include <imgui/font_awesome.h>
 #include <system_error>
 
@@ -377,14 +378,22 @@ SK_XInput_Enable ( BOOL bEnable )
 
   auto& context = xinput_ctx.XInput1_4;
 
-  if ((intptr_t)context.hMod > 0)
+  // Under x86-64 emulation on ARM64 (Wine/Proton ARM64EC) Wine's XInputEnable (FALSE) cancels the
+  //   controller's pending HID read and XInputEnable (TRUE) starts a new one. Done as often as
+  //   Special K does it (every control panel close), Wine's update thread could end up waiting on
+  //   the new read while holding the XInput lock, and the game froze until the next controller
+  //   input (Resident Evil 2). There only our own flag changes; the game's own calls still pass.
+  if (! SK_IsX64EmulatedOnARM64 ())
   {
-    if (context.XInputEnable_Original != nullptr)
-        context.XInputEnable_Original (bEnable);
-  }
+    if ((intptr_t)context.hMod > 0)
+    {
+      if (context.XInputEnable_Original != nullptr)
+          context.XInputEnable_Original (bEnable);
+    }
 
-  if (XInputEnable_SK != nullptr)
-      XInputEnable_SK (bEnable);
+    if (XInputEnable_SK != nullptr)
+        XInputEnable_SK (bEnable);
+  }
 
   xinput_enabled =
     bEnable;
