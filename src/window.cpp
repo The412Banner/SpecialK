@@ -2769,6 +2769,7 @@ GetWindowThreadProcessId_Detour ( _In_      HWND       hWnd,
 
 // Convenience function since there are so damn many
 //   variants of these functions that need to be hooked.
+#ifdef _WIN64
 // DIAGNOSTIC (diag/ngs-window-trace, not for release): find who writes Ninja Gaiden Sigma's render-loop flag
 //   (app object 0x140bf4330 + 0x158). When armed, the page is read-only; the first write to the flag is logged
 //   with RIP, thread and stack return addresses, then the page is made writable again.
@@ -2887,6 +2888,8 @@ SK_Diag_ArmFlagWatch (void)
   SK_Diag_ProtectPage (true);
   CloseHandle (CreateThread (nullptr, 0, SK_Diag_WatchThread, nullptr, 0, nullptr));
 }
+
+#endif // _WIN64
 
 // DIAGNOSTIC (diag/ngs-window-trace, not for release): who closes the window / changes its style.
 static void
@@ -3203,7 +3206,9 @@ SetWindowLongPtr_Marshall (
   if (nIndex == GWL_STYLE || nIndex == GWL_EXSTYLE)
   {
     SK_Diag_LogWindowCall (L"SetWindowLongPtr", hWnd, (UINT)nIndex, dwNewLong, _ReturnAddress ());
+#ifdef _WIN64
     if (nIndex == GWL_STYLE && GetModuleHandleW (nullptr) == (HMODULE)0x140000000) SK_Diag_ArmFlagWatch ();
+#endif
   }
 
   //dll_log->Log (L"SetWindowLongPtr: Idx=%li, Val=%X -- Caller: %s", nIndex, dwNewLong, SK_GetCallerName ().c_str ());
@@ -5303,7 +5308,9 @@ PostMessageW_Detour (HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
   if (Msg == WM_DESTROY || Msg == WM_CLOSE || Msg == WM_QUIT || Msg == WM_SYSCOMMAND)
   {
     SK_Diag_LogWindowCall (L"PostMessageW", hWnd, Msg, (LONG_PTR)wParam, _ReturnAddress ());
+#ifdef _WIN64
     SK_LOGi0 (L"[DIAG] at post: flag=%u obj+0x150=%p", *(volatile BYTE *)kDiagFlag, *(void * volatile *)(kDiagFlag - 8));
+#endif
   }
 
   if (Msg == WM_MOUSEMOVE && (SK_ImGui_Active () || SK_ImGui_WantMouseCapture ()))
