@@ -2903,7 +2903,7 @@ SK_Diag_WatchThread (LPVOID)
   return 0;
 }
 
-static void
+void
 SK_Diag_ArmFlagWatch (void)
 {
   if (InterlockedCompareExchange (&s_diag_armed, 1, 0) != 0)
@@ -2948,6 +2948,59 @@ SK_Diag_LogWindowCall (const wchar_t* what, HWND hWnd, UINT code, LONG_PTR val, 
                what, hWnd, game_window.hWnd, code, (unsigned long long)val,
                GetCurrentThreadId (), fmt (ret).c_str (), chain.c_str () );
 }
+
+#ifdef _WIN64
+// DIAGNOSTIC (diag/ngs-window-trace, not for release): hook Ninja Gaiden Sigma's "stop" listener
+//   (0x1407ba350: movb $0,0xe8(%rcx) -> app+0x158 = 0) and its restart command (0x1407ba4c0) and log callers.
+using SK_Diag_Fn1_pfn = void (__fastcall *)(void *);
+static SK_Diag_Fn1_pfn SK_Diag_Stop_Original    = nullptr;
+static SK_Diag_Fn1_pfn SK_Diag_Restart_Original = nullptr;
+
+static void __fastcall
+SK_Diag_Stop_Detour (void *This)
+{
+  SK_Diag_LogWindowCall (L"GameStop 1407ba350", nullptr, 0, (LONG_PTR)This, _ReturnAddress ());
+  SK_Diag_Stop_Original (This);
+}
+
+static void __fastcall
+SK_Diag_Restart_Detour (void *This)
+{
+  SK_Diag_LogWindowCall (L"GameRestartCmd 1407ba4c0", nullptr, 0, (LONG_PTR)This, _ReturnAddress ());
+  SK_Diag_Restart_Original (This);
+}
+
+static DWORD WINAPI
+SK_Diag_HookThread (LPVOID)
+{
+  Sleep (1500);
+  if (GetModuleHandleW (nullptr) != (HMODULE)0x140000000)
+    return 0;
+
+  static const BYTE stop_bytes [] = { 0xC6, 0x81, 0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3 };
+  if (memcmp ((const void *)0x1407ba350, stop_bytes, sizeof (stop_bytes)) != 0)
+  {
+    SK_LOGi0 (L"[DIAG] stop hook skipped: bytes differ (not Ninja Gaiden Sigma 1.0.0.4?)");
+    return 0;
+  }
+
+  MH_STATUS st1 = SK_CreateFuncHook (L"NGS_Stop",    (void *)0x1407ba350, SK_Diag_Stop_Detour,
+                                     (void **)&SK_Diag_Stop_Original);
+  MH_STATUS st2 = SK_CreateFuncHook (L"NGS_Restart", (void *)0x1407ba4c0, SK_Diag_Restart_Detour,
+                                     (void **)&SK_Diag_Restart_Original);
+  MH_STATUS en1 = SK_EnableHook ((void *)0x1407ba350);
+  MH_STATUS en2 = SK_EnableHook ((void *)0x1407ba4c0);
+  SK_LOGi0 (L"[DIAG] stop/restart hooks: create %d/%d enable %d/%d", st1, st2, en1, en2);
+  return 0;
+}
+
+static struct SK_Diag_HookInit {
+  SK_Diag_HookInit (void) {
+    HANDLE hThread = CreateThread (nullptr, 0, SK_Diag_HookThread, nullptr, 0, nullptr);
+    if (hThread != nullptr) CloseHandle (hThread);
+  }
+} s_diag_hook_init;
+#endif // _WIN64
 
 LONG
 WINAPI
@@ -3232,9 +3285,6 @@ SetWindowLongPtr_Marshall (
   if (nIndex == GWL_STYLE || nIndex == GWL_EXSTYLE)
   {
     SK_Diag_LogWindowCall (L"SetWindowLongPtr", hWnd, (UINT)nIndex, dwNewLong, _ReturnAddress ());
-#ifdef _WIN64
-    if (nIndex == GWL_STYLE && GetModuleHandleW (nullptr) == (HMODULE)0x140000000) SK_Diag_ArmFlagWatch ();
-#endif
   }
 
   //dll_log->Log (L"SetWindowLongPtr: Idx=%li, Val=%X -- Caller: %s", nIndex, dwNewLong, SK_GetCallerName ().c_str ());
