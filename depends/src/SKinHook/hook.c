@@ -711,7 +711,11 @@ FreezeEx (PFROZEN_THREADS pThreads, UINT pos, UINT action, UINT idx)
   if (! SK_IsX64EmulatedOnARM64 ())
     SK_NtLdr_LockLoaderLock (0x0, &ldrState, &ldrCookie);
 
-  EnumerateThreads (pThreads);
+  // Not under x86-64 emulation on ARM64: threads are not suspended there. Ninja Gaiden Sigma hung
+  //   or quit right after Special K installed its late D3D11 hooks; suspending threads that may be
+  //   inside the emulator is the suspected cause. Patches are applied with other threads running.
+  if (! SK_IsX64EmulatedOnARM64 ())
+    EnumerateThreads (pThreads);
 
   // Prevent deadlocks with other hook software that might
   //   be in the process of suspending stuff.
