@@ -2769,6 +2769,38 @@ GetWindowThreadProcessId_Detour ( _In_      HWND       hWnd,
 
 // Convenience function since there are so damn many
 //   variants of these functions that need to be hooked.
+// DIAGNOSTIC (diag/ngs-window-trace, not for release): who closes the window / changes its style.
+static void
+SK_Diag_LogWindowCall (const wchar_t* what, HWND hWnd, UINT code, LONG_PTR val, void* ret)
+{
+  auto fmt = [](void* addr) -> std::wstring
+  {
+    HMODULE hMod = SK_GetModuleFromAddr (addr);
+    wchar_t wszName [MAX_PATH] = L"?";
+    if (hMod != nullptr)
+    {
+      GetModuleFileNameW (hMod, wszName, MAX_PATH);
+      PathStripPathW     (wszName);
+    }
+    return SK_FormatStringW (L"%ws+%llx", wszName,
+      (unsigned long long)((uintptr_t)addr - (uintptr_t)hMod));
+  };
+
+  void*  frames [20] = { };
+  USHORT count       = RtlCaptureStackBackTrace (1, 20, frames, nullptr);
+
+  std::wstring chain;
+  for (USHORT i = 0; i < count; ++i)
+  {
+    chain += fmt (frames [i]);
+    chain += L" < ";
+  }
+
+  SK_LOGi0 ( L"[DIAG] %ws hwnd=%p game=%p code=%x val=%llx tid=%x ret=%ws | %ws",
+               what, hWnd, game_window.hWnd, code, (unsigned long long)val,
+               GetCurrentThreadId (), fmt (ret).c_str (), chain.c_str () );
+}
+
 LONG
 WINAPI
 SetWindowLong_Marshall (
@@ -2778,6 +2810,9 @@ SetWindowLong_Marshall (
   _In_ LONG              dwNewLong )
 {
   if (pOrigFunc == nullptr) return 0;
+
+  if (nIndex == GWL_STYLE || nIndex == GWL_EXSTYLE)
+    SK_Diag_LogWindowCall (L"SetWindowLong", hWnd, (UINT)nIndex, dwNewLong, _ReturnAddress ());
 
   // Override window styles
   if (hWnd == game_window.hWnd)
@@ -3045,6 +3080,9 @@ SetWindowLongPtr_Marshall (
 )
 {
   if (pOrigFunc == nullptr) return 0;
+
+  if (nIndex == GWL_STYLE || nIndex == GWL_EXSTYLE)
+    SK_Diag_LogWindowCall (L"SetWindowLongPtr", hWnd, (UINT)nIndex, dwNewLong, _ReturnAddress ());
 
   //dll_log->Log (L"SetWindowLongPtr: Idx=%li, Val=%X -- Caller: %s", nIndex, dwNewLong, SK_GetCallerName ().c_str ());
 
@@ -5124,6 +5162,9 @@ PostMessageA_Detour (HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
   SK_LOG_FIRST_CALL
 
+  if (Msg == WM_DESTROY || Msg == WM_CLOSE || Msg == WM_QUIT || Msg == WM_SYSCOMMAND)
+    SK_Diag_LogWindowCall (L"PostMessageA", hWnd, Msg, (LONG_PTR)wParam, _ReturnAddress ());
+
   if (Msg == WM_MOUSEMOVE && (SK_ImGui_Active () || SK_ImGui_WantMouseCapture ()))
     return TRUE;
 
@@ -5136,6 +5177,9 @@ WINAPI
 PostMessageW_Detour (HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
   SK_LOG_FIRST_CALL
+
+  if (Msg == WM_DESTROY || Msg == WM_CLOSE || Msg == WM_QUIT || Msg == WM_SYSCOMMAND)
+    SK_Diag_LogWindowCall (L"PostMessageW", hWnd, Msg, (LONG_PTR)wParam, _ReturnAddress ());
 
   if (Msg == WM_MOUSEMOVE && (SK_ImGui_Active () || SK_ImGui_WantMouseCapture ()))
     return TRUE;
