@@ -434,8 +434,24 @@ IWrapDXGISwapChain::Release (void)
 
     pDev.Release ();
 
-    if ((! _d3d12_rbk->frames_.empty ()) ||
-           _d3d12_rbk->_pCommandQueue.p != nullptr)
+    // Only the SwapChain the overlay draws on takes the overlay's command queue with it.
+    IDXGISwapChain3* pOverlayChain =
+      _d3d12_rbk->_pSwapChain.p;
+
+    const bool bOverlayChain =
+      pOverlayChain == nullptr                                   ||
+      pOverlayChain == static_cast <IDXGISwapChain3 *> (this)    ||
+      pOverlayChain == reinterpret_cast <IDXGISwapChain3 *> (pReal) ||
+      (pReal3 != nullptr && pOverlayChain == pReal3);
+
+    if (! bOverlayChain)
+    {
+      SK_LOGi0 (
+        L"Released SwapChain was not the overlay's; its D3D12 render context is kept" );
+    }
+
+    else if ((! _d3d12_rbk->frames_.empty ()) ||
+                _d3d12_rbk->_pCommandQueue.p != nullptr)
     {
       SK_LOGi0 (
         L"Clearing ImGui D3D12 Command Queue because SwapChain using it "

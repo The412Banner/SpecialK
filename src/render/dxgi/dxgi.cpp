@@ -6433,6 +6433,23 @@ auto _PushInitialDWMColorSpace = [](IDXGISwapChain* pSwapChain, SK_RenderBackend
 
 IDXGISwapChain1* SK_DXGI_MakeCachedSwapChainForHwnd (IDXGISwapChain1* pSwapChain, HWND hWnd, IUnknown* pDevice);
 
+// A D3D12 SwapChain for a hidden window that is not the game's, such as the one REFramework
+//   creates to find the D3D12 vtables (it never presents and is released right away), must not
+//   take the overlay's render context away from the game's SwapChain.
+static bool
+SK_D3D12_IsHiddenHelperSwapChain (IDXGISwapChain *pSwapChain)
+{
+  DXGI_SWAP_CHAIN_DESC desc = { };
+
+  if ( _d3d12_rbk->_pSwapChain.p == nullptr || pSwapChain == nullptr ||
+       FAILED (pSwapChain->GetDesc (&desc)) )
+    return false;
+
+  return desc.OutputWindow != 0                &&
+         desc.OutputWindow != game_window.hWnd &&
+       (! IsWindowVisible (desc.OutputWindow));
+}
+
 IWrapDXGISwapChain*
 SK_DXGI_WrapSwapChain ( IUnknown        *pDevice,
                         IDXGISwapChain  *pSwapChain,
@@ -6500,13 +6517,24 @@ SK_DXGI_WrapSwapChain ( IUnknown        *pDevice,
 
     ret->SetPrivateData (SKID_D3D12_SwapChainCommandQueue, uiSize, pCmdQueue);
 
-    rb.setDevice            (pDev12.p);
-    rb.d3d12.command_queue = pCmdQueue.p;
+    if (SK_D3D12_IsHiddenHelperSwapChain (pSwapChain))
+    {
+      SK_LOGi0 (
+        L" > SwapChain (%08" _L(PRIxPTR) L"h) is for a hidden window; the overlay stays on the game's SwapChain",
+                 (uintptr_t)pSwapChain
+      );
+    }
 
-    _d3d12_rbk->init (
-      (IDXGISwapChain3 *)ret,
-        rb.d3d12.command_queue.p
-    );
+    else
+    {
+      rb.setDevice            (pDev12.p);
+      rb.d3d12.command_queue = pCmdQueue.p;
+
+      _d3d12_rbk->init (
+        (IDXGISwapChain3 *)ret,
+          rb.d3d12.command_queue.p
+      );
+    }
   }
 
   else if ( pDev11 != nullptr )
@@ -6638,13 +6666,24 @@ SK_DXGI_WrapSwapChain1 ( IUnknown         *pDevice,
 
     ret->SetPrivateData (SKID_D3D12_SwapChainCommandQueue, uiSize, pCmdQueue);
 
-    rb.setDevice            (pDev12.p);
-    rb.d3d12.command_queue = pCmdQueue.p;
+    if (SK_D3D12_IsHiddenHelperSwapChain (pSwapChain))
+    {
+      SK_LOGi0 (
+        L" > SwapChain (%08" _L(PRIxPTR) L"h) is for a hidden window; the overlay stays on the game's SwapChain",
+                 (uintptr_t)pSwapChain
+      );
+    }
 
-    _d3d12_rbk->init (
-      (IDXGISwapChain3 *)ret,
-        rb.d3d12.command_queue.p
-    );
+    else
+    {
+      rb.setDevice            (pDev12.p);
+      rb.d3d12.command_queue = pCmdQueue.p;
+
+      _d3d12_rbk->init (
+        (IDXGISwapChain3 *)ret,
+          rb.d3d12.command_queue.p
+      );
+    }
   }
 
   else if ( pDev11 != nullptr )
