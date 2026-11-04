@@ -1764,6 +1764,7 @@ SK_XInput_ValidateStatePointer (XINPUT_STATE *pState)
 }
 
 #include <SpecialK/sound.h>
+#include <SpecialK/arm64ec.h>
 
 XINPUT_STATE SK_ImGui_XInputState = {};
 
@@ -1870,6 +1871,19 @@ SK_ImGui_PollGamepad_EndFrame (XINPUT_STATE* pState)
       config.control_panel.keys.toggle.vKey == VK_TAB ?
                                          keys.tab.now :
       ImGui::IsKeyPressed ((ImGuiKey)config.control_panel.keys.toggle.vKey, false);
+
+    // Under x86-64 emulation on ARM64 (Wine/Proton ARM64EC) some games get no key messages
+    //   (RE2), so ImGui never sees the key; its held state still arrives.
+    if (SK_IsX64EmulatedOnARM64 ())
+    {
+      const bool held =
+        (SK_GetAsyncKeyState (config.control_panel.keys.toggle.vKey) & 0x8000) == 0x8000;
+
+      if (held && (! keys.cfg_toggle.now) && (! keys.cfg_toggle.last))
+        SK_LOG0 ( (L"Control panel key held without a key message"), L"  Input   " );
+
+      keys.cfg_toggle.now |= held;
+    }
 
     if (! keys.capslock.toggled)
     {
