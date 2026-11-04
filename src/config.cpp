@@ -4804,6 +4804,14 @@ auto DeclKeybind =
 
   apis.dxvk9.enable->load (config.apis.d3d9.native_dxvk);
 
+  // Under x86-64 emulation on ARM64 (Wine/Proton ARM64EC) d3d9.dll is usually DXVK, often loaded only
+  //   by a helper (e.g. a Steam emulator's overlay). Do not stop the game to ask about native DXVK
+  //   support; keep the normal D3D9 hooks unless the user chose otherwise.
+  if (SK_IsX64EmulatedOnARM64 () && config.apis.d3d9.native_dxvk == SK_NoPreference)
+  {
+    config.apis.d3d9.native_dxvk = 0;
+  }
+
   if (! apis.d3d9.hook->load (config.apis.d3d9.hook))
     config.apis.d3d9.hook = true;
 
@@ -6291,6 +6299,34 @@ auto DeclKeybind =
 
 
   platform.log.silent->load                   (config.platform.silent);
+
+  // Under x86-64 emulation on ARM64 (Wine/Proton ARM64EC) games often run with a Steam emulator
+  //   (Goldberg / gbe_fork, CODEX) instead of Steam. Special K's Steam integration asks for interface
+  //   versions newer than the game's own; such emulators then show "Missing interface" and close
+  //   the game (Ninja Gaiden Sigma) or show a message box (Resident Evil 2). Turn the integration off
+  //   when one of their files is next to the game.
+  if (SK_IsX64EmulatedOnARM64 () && (! config.platform.silent))
+  {
+    static const wchar_t* steam_emu_files [] = {
+      L"steam_settings", L"steam_interfaces.txt", L"steam_emu.ini",
+      L"SmartSteamEmu.ini", L"ColdClientLoader.ini"
+    };
+
+    for ( auto file : steam_emu_files )
+    {
+      wchar_t     wszPath [MAX_PATH + 2] = { };
+      PathAppendW (wszPath, SK_GetHostPath ());
+      PathAppendW (wszPath, file);
+
+      if (PathFileExistsW (wszPath))
+      {
+        SK_LOGi0 (L"Steam emulator file next to the game (%ws): Steam integration off", file);
+
+        config.platform.silent = true;
+        break;
+      }
+    }
+  }
   steam.drm.spoof_BLoggedOn->load             (config.steam.spoof_BLoggedOn);
 
   // We may already know the AppID before loading the game's config.
