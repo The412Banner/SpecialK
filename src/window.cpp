@@ -2830,10 +2830,22 @@ SK_Diag_LogWrite (EXCEPTION_POINTERS* ep, uintptr_t addr, bool flag)
                GetCurrentThreadId (), chain.c_str () );
 }
 
+static volatile LONG s_diag_steps = 0;
+
 static LONG CALLBACK
 SK_Diag_VEH (EXCEPTION_POINTERS* ep)
 {
   auto* er = ep->ExceptionRecord;
+
+  // Re-protect after the single instruction that was let through.
+  if (er->ExceptionCode == EXCEPTION_SINGLE_STEP && ReadAcquire (&s_diag_armed) != 0 && ReadAcquire (&s_diag_done) == 0)
+  {
+    InterlockedIncrement (&s_diag_steps);
+    SK_Diag_ProtectPage (true);
+    ep->ContextRecord->EFlags &= ~0x100u;
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
+
   if ( er->ExceptionCode          != EXCEPTION_ACCESS_VIOLATION ||
        er->NumberParameters        < 2                          ||
        er->ExceptionInformation [0] != 1 )
@@ -2844,12 +2856,22 @@ SK_Diag_VEH (EXCEPTION_POINTERS* ep)
     return EXCEPTION_CONTINUE_SEARCH;
 
   const bool flag = (addr <= kDiagFlag && kDiagFlag < addr + 16);
-  if (flag || InterlockedIncrement (&s_diag_faults) <= 30)
-    SK_Diag_LogWrite (ep, addr, flag);
+  if (flag)
+  {
+    SK_Diag_LogWrite (ep, addr, true);
+    InterlockedExchange (&s_diag_done, 1);
+    SK_Diag_ProtectPage (false);
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
 
+  if (InterlockedIncrement (&s_diag_faults) <= 200)
+    SK_LOGi0 (L"[DIAG] w %llx rip=%ws tid=%x", (unsigned long long)addr,
+                SK_Diag_FmtAddr ((uintptr_t)er->ExceptionAddress).c_str (), GetCurrentThreadId ());
+
+  // Let this one instruction write, then trap and protect again.
   SK_Diag_ProtectPage (false);
-  if (flag) InterlockedExchange (&s_diag_done,   1);
-  else      InterlockedExchange (&s_diag_reprot, 1);
+  ep->ContextRecord->EFlags |= 0x100u;
+  InterlockedExchange (&s_diag_reprot, 1);
   return EXCEPTION_CONTINUE_EXECUTION;
 }
 
@@ -2861,7 +2883,10 @@ SK_Diag_WatchThread (LPVOID)
   while (ReadAcquire (&s_diag_done) == 0 && GetTickCount () - start < 20000)
   {
     if (InterlockedExchange (&s_diag_reprot, 0) != 0)
+    {
+      Sleep (2);
       SK_Diag_ProtectPage (true);
+    }
     const BYTE now = *(volatile BYTE *)kDiagFlag;
     if (now != last)
     {
@@ -2872,8 +2897,8 @@ SK_Diag_WatchThread (LPVOID)
   }
   InterlockedExchange (&s_diag_armed, 0);
   SK_Diag_ProtectPage (false);
-  SK_LOGi0 (L"[DIAG] watcher ended: done=%d faults=%d flag=%u", ReadAcquire (&s_diag_done),
-              ReadAcquire (&s_diag_faults), *(volatile BYTE *)kDiagFlag);
+  SK_LOGi0 (L"[DIAG] watcher ended: done=%d faults=%d single-steps=%d flag=%u", ReadAcquire (&s_diag_done),
+              ReadAcquire (&s_diag_faults), ReadAcquire (&s_diag_steps), *(volatile BYTE *)kDiagFlag);
   return 0;
 }
 
