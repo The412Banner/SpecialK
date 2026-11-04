@@ -188,6 +188,164 @@ SK_GetDLLName (void)
 
 #include <appmodel.h>
 
+// Some games count the DLLs loaded from their own folder with K32EnumProcessModules(Ex) and quit
+//   without a message when there are more than they ship with (Ninja Gaiden Sigma accepts exactly its
+//   EXE and steam_api64.dll). Special K loaded as a local wrapper (dxgi.dll, d3d11.dll, ...) is one more,
+//   so the EXE's own imports of these functions are pointed at versions that leave Special K out.
+using SK_EnumProcessModules_pfn   = BOOL (WINAPI *)(HANDLE, HMODULE*, DWORD, LPDWORD);
+using SK_EnumProcessModulesEx_pfn = BOOL (WINAPI *)(HANDLE, HMODULE*, DWORD, LPDWORD, DWORD);
+
+static SK_EnumProcessModules_pfn   SK_HostEnumProcessModules_Original   = nullptr;
+static SK_EnumProcessModulesEx_pfn SK_HostEnumProcessModulesEx_Original = nullptr;
+static HMODULE                     SK_HostModuleScan_Self               = nullptr;
+
+static BOOL
+SK_HostModuleScan_Filtered ( HANDLE  hProcess,   HMODULE* lphModule, DWORD cb,
+                             LPDWORD lpcbNeeded, DWORD    dwFilterFlag, bool ex )
+{
+  auto call_original = [&](HMODULE* pMods, DWORD bytes, LPDWORD pNeeded) -> BOOL
+  {
+    return ex ? SK_HostEnumProcessModulesEx_Original (hProcess, pMods, bytes, pNeeded, dwFilterFlag)
+              : SK_HostEnumProcessModules_Original   (hProcess, pMods, bytes, pNeeded);
+  };
+
+  if ( lpcbNeeded == nullptr || SK_HostModuleScan_Self == nullptr ||
+       GetProcessId (hProcess) != GetCurrentProcessId () )
+    return call_original (lphModule, cb, lpcbNeeded);
+
+  std::vector <HMODULE> mods (256);
+  DWORD                 needed = 0;
+
+  for (int tries = 0; ; ++tries)
+  {
+    const DWORD bytes =
+      static_cast <DWORD> (mods.size () * sizeof (HMODULE));
+
+    if (! call_original (mods.data (), bytes, &needed))
+      return FALSE;
+
+    if (needed <= bytes || tries == 3)
+      break;
+
+    mods.resize (needed / sizeof (HMODULE) + 32);
+  }
+
+  mods.resize (
+    std::min (mods.size (), static_cast <size_t> (needed / sizeof (HMODULE)))
+  );
+  mods.erase (
+    std::remove (mods.begin (), mods.end (), SK_HostModuleScan_Self), mods.end ()
+  );
+
+  const DWORD out =
+    static_cast <DWORD> (mods.size () * sizeof (HMODULE));
+
+  *lpcbNeeded = out;
+
+  if (lphModule != nullptr)
+  {
+    const DWORD copy =
+      static_cast <DWORD> ((std::min (cb, out) / sizeof (HMODULE)) * sizeof (HMODULE));
+
+    if (copy != 0)
+      memcpy (lphModule, mods.data (), copy);
+  }
+
+  return TRUE;
+}
+
+static BOOL WINAPI
+SK_HostEnumProcessModules_Detour (HANDLE hProcess, HMODULE* lphModule, DWORD cb, LPDWORD lpcbNeeded)
+{
+  return SK_HostModuleScan_Filtered (hProcess, lphModule, cb, lpcbNeeded, 0x0, false);
+}
+
+static BOOL WINAPI
+SK_HostEnumProcessModulesEx_Detour (HANDLE hProcess, HMODULE* lphModule, DWORD cb, LPDWORD lpcbNeeded, DWORD dwFilterFlag)
+{
+  return SK_HostModuleScan_Filtered (hProcess, lphModule, cb, lpcbNeeded, dwFilterFlag, true);
+}
+
+// Patch the host EXE's import address table (only the game's own calls are affected).
+static void
+SK_HideFromHostModuleScan (HMODULE hModSelf)
+{
+  auto* pBase =
+    reinterpret_cast <BYTE *> (GetModuleHandleW (nullptr));
+
+  if (pBase == nullptr || reinterpret_cast <HMODULE> (pBase) == hModSelf)
+    return;
+
+  auto* pDos = reinterpret_cast <IMAGE_DOS_HEADER *> (pBase);
+  if (pDos->e_magic != IMAGE_DOS_SIGNATURE)
+    return;
+
+  auto* pNt = reinterpret_cast <IMAGE_NT_HEADERS *> (pBase + pDos->e_lfanew);
+  if (pNt->Signature != IMAGE_NT_SIGNATURE)
+    return;
+
+  const IMAGE_DATA_DIRECTORY& dir =
+    pNt->OptionalHeader.DataDirectory [IMAGE_DIRECTORY_ENTRY_IMPORT];
+
+  if (dir.VirtualAddress == 0 || dir.Size == 0)
+    return;
+
+  SK_HostModuleScan_Self = hModSelf;
+
+  for ( auto* pImp = reinterpret_cast <IMAGE_IMPORT_DESCRIPTOR *> (pBase + dir.VirtualAddress);
+              pImp->Name != 0 ; ++pImp )
+  {
+    if (pImp->OriginalFirstThunk == 0 || pImp->FirstThunk == 0)
+      continue;
+
+    auto* pNames = reinterpret_cast <IMAGE_THUNK_DATA *> (pBase + pImp->OriginalFirstThunk);
+    auto* pSlots = reinterpret_cast <IMAGE_THUNK_DATA *> (pBase + pImp->FirstThunk);
+
+    for ( ; pNames->u1.AddressOfData != 0 ; ++pNames, ++pSlots )
+    {
+      if (IMAGE_SNAP_BY_ORDINAL (pNames->u1.Ordinal))
+        continue;
+
+      const char* szName =
+        reinterpret_cast <IMAGE_IMPORT_BY_NAME *> (pBase + pNames->u1.AddressOfData)->Name;
+
+      void*  pDetour = nullptr;
+      void** ppOrig  = nullptr;
+
+      if ( ! lstrcmpA (szName, "K32EnumProcessModulesEx") ||
+           ! lstrcmpA (szName,    "EnumProcessModulesEx") )
+      {
+        pDetour = reinterpret_cast <void *>  ( SK_HostEnumProcessModulesEx_Detour);
+        ppOrig  = reinterpret_cast <void **> (&SK_HostEnumProcessModulesEx_Original);
+      }
+
+      else if ( ! lstrcmpA (szName, "K32EnumProcessModules") ||
+                ! lstrcmpA (szName,    "EnumProcessModules") )
+      {
+        pDetour = reinterpret_cast <void *>  ( SK_HostEnumProcessModules_Detour);
+        ppOrig  = reinterpret_cast <void **> (&SK_HostEnumProcessModules_Original);
+      }
+
+      else
+        continue;
+
+      DWORD dwOld = 0;
+
+      if (VirtualProtect (&pSlots->u1.Function, sizeof (pSlots->u1.Function), PAGE_READWRITE, &dwOld))
+      {
+        if (*ppOrig == nullptr)
+            *ppOrig = reinterpret_cast <void *> (pSlots->u1.Function);
+
+        pSlots->u1.Function =
+          reinterpret_cast <decltype (pSlots->u1.Function)> (pDetour);
+
+        VirtualProtect (&pSlots->u1.Function, sizeof (pSlots->u1.Function), dwOld, &dwOld);
+      }
+    }
+  }
+}
+
+
 // Various detection methods to prevent injection into software that is
 //   either untested or known incompatible.
 //
@@ -609,6 +767,9 @@ DllMain ( HMODULE hModule,
       //   re-inject itself constantly; just return TRUE here.
       if (DLL_ROLE::INVALID == SK_GetDLLRole ())   return EarlyOut (TRUE);
       if (! SK_Attach         (SK_GetDLLRole ()))  return EarlyOut (TRUE);
+
+      // Before the game's own code runs: keep Special K out of its module scans.
+      SK_HideFromHostModuleScan (hModule);
 
       InterlockedIncrementRelease (
         &__SK_DLL_Refs
