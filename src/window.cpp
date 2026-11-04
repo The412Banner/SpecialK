@@ -22,6 +22,7 @@
 **/
 
 #include <SpecialK/stdafx.h>
+#include <SpecialK/arm64ec.h>
 #include <imgui/backends/imgui_d3d11.h>
 
 #ifdef  __SK_SUBSYSTEM__
@@ -2868,9 +2869,11 @@ SK_Diag_VEH (EXCEPTION_POINTERS* ep)
     SK_LOGi0 (L"[DIAG] w %llx rip=%ws tid=%x", (unsigned long long)addr,
                 SK_Diag_FmtAddr ((uintptr_t)er->ExceptionAddress).c_str (), GetCurrentThreadId ());
 
-  // Let this one instruction write, then trap and protect again.
+  // Let this one write through, then protect again: x86-64 code traps after one instruction (TF);
+  //   native ARM64EC code (e.g. ntdll locks) cannot single-step, the watcher re-protects at once.
   SK_Diag_ProtectPage (false);
-  ep->ContextRecord->EFlags |= 0x100u;
+  if (! SK_IsArm64ECCode ((LPVOID)er->ExceptionAddress))
+    ep->ContextRecord->EFlags |= 0x100u;
   InterlockedExchange (&s_diag_reprot, 1);
   return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -2883,17 +2886,15 @@ SK_Diag_WatchThread (LPVOID)
   while (ReadAcquire (&s_diag_done) == 0 && GetTickCount () - start < 20000)
   {
     if (InterlockedExchange (&s_diag_reprot, 0) != 0)
-    {
-      Sleep (2);
       SK_Diag_ProtectPage (true);
-    }
     const BYTE now = *(volatile BYTE *)kDiagFlag;
     if (now != last)
     {
       SK_LOGi0 (L"[DIAG] flag changed %u -> %u (watcher, %u ms after arming)", last, now, GetTickCount () - start);
       last = now;
     }
-    Sleep (1);
+    if (GetTickCount () - start < 5000) YieldProcessor ();
+    else                                 Sleep (1);
   }
   InterlockedExchange (&s_diag_armed, 0);
   SK_Diag_ProtectPage (false);
