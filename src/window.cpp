@@ -6228,7 +6228,14 @@ SK_DetourWindowProc ( _In_  HWND   hWnd,
     } break;
 
     case WM_GETMINMAXINFO:
-      return 0;
+      // Only swallow this while Special K sizes the window itself. Otherwise the game sets its own
+      //   limits: Ninja Gaiden Sigma allows a window larger than the screen so its caption sits above
+      //   it; with the message dropped, Wine clamped the window and the game rendered at 1280x694.
+      if ( config.window.borderless || config.window.fullscreen ||
+           (! config.window.res.override.isZero ())               ||
+           SK_GetCurrentRenderBackend ().isFakeFullscreen () )
+        return 0;
+      break;
 
     case WM_ENTERSIZEMOVE:
     case WM_EXITSIZEMOVE:
