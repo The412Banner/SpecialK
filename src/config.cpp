@@ -20,6 +20,7 @@
 **/
 
 #include <SpecialK/stdafx.h>
+#include <SpecialK/arm64ec.h>
 
 #ifndef __SK_SUBSYSTEM__
 #define __SK_SUBSYSTEM__ L"  Config  "
@@ -5345,6 +5346,15 @@ auto DeclKeybind =
       config.render.framerate.flip_discard = false;
       config.render.dxgi.allow_tearing     = false;
     }
+  }
+
+  // Under x86-64 emulation on ARM64 (Wine/Proton ARM64EC) DXVK / vkd3d present through Vulkan either
+  //   way. Upgrading a game's SwapChain to the flip model there gave nothing and squashed Ninja Gaiden
+  //   Sigma's image into a band; games that use the flip model themselves are not changed.
+  if (SK_IsX64EmulatedOnARM64 ())
+  {
+    config.render.framerate.flip_discard = false;
+    config.render.dxgi.allow_tearing     = false;
   }
 
   render.dxgi.adapter_override->load (config.render.dxgi.adapter_override);

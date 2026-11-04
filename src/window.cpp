@@ -6228,21 +6228,13 @@ SK_DetourWindowProc ( _In_  HWND   hWnd,
     } break;
 
     case WM_GETMINMAXINFO:
-      // The game never sees this message. Unless Special K sizes the window itself, do not leave the
-      //   system's default maximum either: allow up to twice the virtual screen, as games do that place
-      //   their caption above the screen (Ninja Gaiden Sigma; with the default, Wine clamped its window
-      //   and the game rendered into 1280x694 with a visible title bar).
-      if ( lParam != 0 && (! config.window.borderless) && (! config.window.fullscreen) &&
+      // Let the game set its own window limits unless Special K sizes the window itself (Ninja Gaiden
+      //   Sigma allows a window larger than the screen so its caption sits above it; with the message
+      //   dropped, Wine clamped the window and the game rendered into 1280x694 with a title bar).
+      if ( hWnd == game_window.hWnd && (! config.window.borderless) && (! config.window.fullscreen) &&
            config.window.res.override.isZero () &&
            (! SK_GetCurrentRenderBackend ().isFakeFullscreen ()) )
-      {
-        auto *pMinMax = reinterpret_cast <MINMAXINFO *> (lParam);
-        const LONG maxX = 2 * std::max (1, GetSystemMetrics (SM_CXVIRTUALSCREEN));
-        const LONG maxY = 2 * std::max (1, GetSystemMetrics (SM_CYVIRTUALSCREEN));
-
-        pMinMax->ptMaxTrackSize.x = std::max (pMinMax->ptMaxTrackSize.x, maxX);
-        pMinMax->ptMaxTrackSize.y = std::max (pMinMax->ptMaxTrackSize.y, maxY);
-      }
+        break;
       return 0;
 
     case WM_ENTERSIZEMOVE:
@@ -7432,6 +7424,21 @@ SK_Win32_IsDummyWindowClass (HWND hWndInstance)
 
   if (RealGetWindowClassW (hWndInstance, wszClassName, 127) > 0)
   {
+    // The ingame_overlay library (e.g. the overlay of the gbe_fork Steam emulator) finds the renderer
+    //   with hidden windows whose class name is 64 random letters and digits; they are not the game's.
+    if (wcslen (wszClassName) == 64 && (! IsWindowVisible (hWndInstance)))
+    {
+      bool random_name = true;
+      for (int i = 0; i < 64 && random_name; ++i)
+      {
+        const wchar_t c = wszClassName [i];
+        random_name = (c >= L'0' && c <= L'9') || (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z');
+      }
+
+      if (random_name)
+        return true;
+    }
+
     wnd_class.cbSize = sizeof (WNDCLASSEXW);
 
     if (GetClassInfoExW (hInstance, wszClassName, &wnd_class))
