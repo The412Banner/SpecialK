@@ -2769,6 +2769,125 @@ GetWindowThreadProcessId_Detour ( _In_      HWND       hWnd,
 
 // Convenience function since there are so damn many
 //   variants of these functions that need to be hooked.
+// DIAGNOSTIC (diag/ngs-window-trace, not for release): find who writes Ninja Gaiden Sigma's render-loop flag
+//   (app object 0x140bf4330 + 0x158). When armed, the page is read-only; the first write to the flag is logged
+//   with RIP, thread and stack return addresses, then the page is made writable again.
+static constexpr uintptr_t kDiagPage = 0x140bf4000;
+static constexpr uintptr_t kDiagFlag = 0x140bf4488;
+static volatile LONG       s_diag_armed  = 0;
+static volatile LONG       s_diag_done   = 0;
+static volatile LONG       s_diag_reprot = 0;
+static volatile LONG       s_diag_faults = 0;
+
+static void
+SK_Diag_ProtectPage (bool read_only)
+{
+  DWORD dwOld = 0;
+  VirtualProtect ((void *)kDiagPage, 0x1000, read_only ? PAGE_READONLY : PAGE_READWRITE, &dwOld);
+}
+
+static int
+SK_Diag_CopyStack (uintptr_t sp, uint64_t* out, int max)
+{
+  int n = 0;
+  __try {
+    for (; n < max; ++n)
+      out [n] = ((const uint64_t *)sp) [n];
+  }
+  __except (EXCEPTION_EXECUTE_HANDLER) { }
+  return n;
+}
+
+static std::wstring
+SK_Diag_FmtAddr (uintptr_t addr)
+{
+  HMODULE hMod = SK_GetModuleFromAddr ((LPCVOID)addr);
+  if (hMod == nullptr)
+    return L"";
+  wchar_t wszName [MAX_PATH] = L"?";
+  GetModuleFileNameW (hMod, wszName, MAX_PATH);
+  PathStripPathW     (wszName);
+  return SK_FormatStringW (L"%ws+%llx", wszName, (unsigned long long)(addr - (uintptr_t)hMod));
+}
+
+static void
+SK_Diag_LogWrite (EXCEPTION_POINTERS* ep, uintptr_t addr, bool flag)
+{
+  uint64_t     stack [96] = { };
+  int          n          = SK_Diag_CopyStack ((uintptr_t)ep->ContextRecord->Rsp, stack, 96);
+  std::wstring chain;
+  for (int i = 0; i < n; ++i)
+  {
+    if (stack [i] < 0x10000) continue;
+    std::wstring m = SK_Diag_FmtAddr ((uintptr_t)stack [i]);
+    if (m.empty ()) continue;
+    chain += SK_FormatStringW (L"[sp+%x] ", i * 8) + m + L" ";
+  }
+  SK_LOGi0 ( L"[DIAG] write %ws addr=%llx flag_now=%u rip=%ws tid=%x | %ws",
+               flag ? L"FLAG" : L"page", (unsigned long long)addr, *(volatile BYTE *)kDiagFlag,
+               SK_Diag_FmtAddr ((uintptr_t)ep->ExceptionRecord->ExceptionAddress).c_str (),
+               GetCurrentThreadId (), chain.c_str () );
+}
+
+static LONG CALLBACK
+SK_Diag_VEH (EXCEPTION_POINTERS* ep)
+{
+  auto* er = ep->ExceptionRecord;
+  if ( er->ExceptionCode          != EXCEPTION_ACCESS_VIOLATION ||
+       er->NumberParameters        < 2                          ||
+       er->ExceptionInformation [0] != 1 )
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  const uintptr_t addr = (uintptr_t)er->ExceptionInformation [1];
+  if ((addr & ~(uintptr_t)0xFFF) != kDiagPage || ReadAcquire (&s_diag_armed) == 0)
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  const bool flag = (addr <= kDiagFlag && kDiagFlag < addr + 16);
+  if (flag || InterlockedIncrement (&s_diag_faults) <= 30)
+    SK_Diag_LogWrite (ep, addr, flag);
+
+  SK_Diag_ProtectPage (false);
+  if (flag) InterlockedExchange (&s_diag_done,   1);
+  else      InterlockedExchange (&s_diag_reprot, 1);
+  return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static DWORD WINAPI
+SK_Diag_WatchThread (LPVOID)
+{
+  const DWORD start = GetTickCount ();
+  BYTE        last  = *(volatile BYTE *)kDiagFlag;
+  while (ReadAcquire (&s_diag_done) == 0 && GetTickCount () - start < 20000)
+  {
+    if (InterlockedExchange (&s_diag_reprot, 0) != 0)
+      SK_Diag_ProtectPage (true);
+    const BYTE now = *(volatile BYTE *)kDiagFlag;
+    if (now != last)
+    {
+      SK_LOGi0 (L"[DIAG] flag changed %u -> %u (watcher, %u ms after arming)", last, now, GetTickCount () - start);
+      last = now;
+    }
+    Sleep (1);
+  }
+  InterlockedExchange (&s_diag_armed, 0);
+  SK_Diag_ProtectPage (false);
+  SK_LOGi0 (L"[DIAG] watcher ended: done=%d faults=%d flag=%u", ReadAcquire (&s_diag_done),
+              ReadAcquire (&s_diag_faults), *(volatile BYTE *)kDiagFlag);
+  return 0;
+}
+
+static void
+SK_Diag_ArmFlagWatch (void)
+{
+  if (InterlockedCompareExchange (&s_diag_armed, 1, 0) != 0)
+    return;
+  SK_LOGi0 (L"[DIAG] arming flag watch: flag=%u obj+0x150=%p vtbl=%p",
+              *(volatile BYTE *)kDiagFlag, *(void * volatile *)(kDiagFlag - 8), *(void * volatile *)0x140bf4330);
+  AddVectoredExceptionHandler (1, SK_Diag_VEH);
+  SK_Diag_ProtectPage (true);
+  CloseHandle (CreateThread (nullptr, 0, SK_Diag_WatchThread, nullptr, 0, nullptr));
+}
+
 // DIAGNOSTIC (diag/ngs-window-trace, not for release): who closes the window / changes its style.
 static void
 SK_Diag_LogWindowCall (const wchar_t* what, HWND hWnd, UINT code, LONG_PTR val, void* ret)
@@ -3082,7 +3201,10 @@ SetWindowLongPtr_Marshall (
   if (pOrigFunc == nullptr) return 0;
 
   if (nIndex == GWL_STYLE || nIndex == GWL_EXSTYLE)
+  {
     SK_Diag_LogWindowCall (L"SetWindowLongPtr", hWnd, (UINT)nIndex, dwNewLong, _ReturnAddress ());
+    if (nIndex == GWL_STYLE && GetModuleHandleW (nullptr) == (HMODULE)0x140000000) SK_Diag_ArmFlagWatch ();
+  }
 
   //dll_log->Log (L"SetWindowLongPtr: Idx=%li, Val=%X -- Caller: %s", nIndex, dwNewLong, SK_GetCallerName ().c_str ());
 
@@ -5179,7 +5301,10 @@ PostMessageW_Detour (HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
   SK_LOG_FIRST_CALL
 
   if (Msg == WM_DESTROY || Msg == WM_CLOSE || Msg == WM_QUIT || Msg == WM_SYSCOMMAND)
+  {
     SK_Diag_LogWindowCall (L"PostMessageW", hWnd, Msg, (LONG_PTR)wParam, _ReturnAddress ());
+    SK_LOGi0 (L"[DIAG] at post: flag=%u obj+0x150=%p", *(volatile BYTE *)kDiagFlag, *(void * volatile *)(kDiagFlag - 8));
+  }
 
   if (Msg == WM_MOUSEMOVE && (SK_ImGui_Active () || SK_ImGui_WantMouseCapture ()))
     return TRUE;
